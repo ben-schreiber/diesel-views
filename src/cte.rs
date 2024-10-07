@@ -1,6 +1,6 @@
 use diesel::{
     backend::Backend,
-    query_builder::{AstPass, QueryFragment, QueryId, SelectQuery},
+    query_builder::{AstPass, Query, QueryFragment, QueryId, SelectQuery},
     result::QueryResult,
 };
 
@@ -51,12 +51,16 @@ impl<Query: SelectQuery, Inner> Cte<Query, Inner> {
     pub fn select_stmt<Select: SelectQuery>(
         self,
         query: Select,
-    ) -> CteSelectStmt<Query, Inner, Select> {
+    ) -> CteSelectStmt<Query, Select, Inner> {
         CteSelectStmt {
-            cte: self,
+            cte: Some(self),
             select_stmt: query,
         }
     }
+}
+
+impl<Q: SelectQuery, Inner> Query for Cte<Q, Inner> {
+    type SqlType = Q::SqlType;
 }
 
 impl<Query: SelectQuery, Inner> SelectQuery for Cte<Query, Inner> {
@@ -75,6 +79,7 @@ where
     Inner: QueryFragment<DB>,
 {
     fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        out.unsafe_to_cache_prepared();
         match &self.inner {
             None => out.push_sql("WITH "),
             Some(inner) => {
@@ -90,26 +95,26 @@ where
     }
 }
 
-pub struct CteSelectStmt<Query, Inner, Select>
+pub struct CteSelectStmt<Query, Select, Inner = private::Empty>
 where
     Query: SelectQuery,
     Select: SelectQuery,
 {
-    cte: Cte<Query, Inner>,
+    cte: Option<Cte<Query, Inner>>,
     select_stmt: Select,
 }
 
-impl<Query, Inner, Select> CteSelectStmt<Query, Inner, Select>
+impl<Query, Inner, Select> CteSelectStmt<Query, Select, Inner>
 where
     Query: SelectQuery,
     Select: SelectQuery,
 {
     pub fn into_cte(self, name: &str) -> Cte<Select, Cte<Query, Inner>> {
-        Cte::new(self.select_stmt, Some(self.cte), name)
+        Cte::new(self.select_stmt, self.cte, name)
     }
 }
 
-impl<Query, Inner, Select, DB> QueryFragment<DB> for CteSelectStmt<Query, Inner, Select>
+impl<Query, Inner, Select, DB> QueryFragment<DB> for CteSelectStmt<Query, Select, Inner>
 where
     DB: Backend,
     Query: QueryFragment<DB> + SelectQuery,
@@ -117,13 +122,25 @@ where
     Select: QueryFragment<DB> + SelectQuery,
 {
     fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        self.cte.walk_ast(out.reborrow())?;
+        out.unsafe_to_cache_prepared();
+        match &self.cte {
+            Some(c) => c.walk_ast(out.reborrow())?,
+            None => (),
+        }
         self.select_stmt.walk_ast(out.reborrow())?;
         Ok(())
     }
 }
 
-impl<Query, Inner, Select> SelectQuery for CteSelectStmt<Query, Inner, Select>
+impl<Q, Inner, Select> Query for CteSelectStmt<Q, Select, Inner>
+where
+    Q: SelectQuery,
+    Select: SelectQuery,
+{
+    type SqlType = Select::SqlType;
+}
+
+impl<Query, Inner, Select> SelectQuery for CteSelectStmt<Query, Select, Inner>
 where
     Query: SelectQuery,
     Select: SelectQuery,
@@ -131,7 +148,7 @@ where
     type SqlType = Select::SqlType;
 }
 
-impl<Query, Inner, Select> QueryId for CteSelectStmt<Query, Inner, Select>
+impl<Query, Inner, Select> QueryId for CteSelectStmt<Query, Select, Inner>
 where
     Query: SelectQuery,
     Select: SelectQuery,

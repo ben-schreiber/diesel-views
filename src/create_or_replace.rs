@@ -37,6 +37,7 @@ where
     D: QueryFragment<DB>,
 {
     fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        out.unsafe_to_cache_prepared();
         out.push_sql("CREATE OR REPLACE VIEW ");
         out.push_identifier(&self.name)?;
         out.push_sql(" AS ");
